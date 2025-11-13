@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # TimescaleDB Database
+  database:
+    image: timescale/timescaledb:latest-pg17
+    container_name: cryptotrade-db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-cryptotrade}
+      - PGDATA=/var/lib/postgresql/data/timescaledb
+    ports:
+      - "${DATABASE_PORT:-5432}:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - cryptotrade-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Python FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cryptotrade-backend
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@database:5432/${POSTGRES_DB:-cryptotrade}
+      - SESSION_SECRET=${SESSION_SECRET:-change-this-secret-in-production}
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "${BACKEND_PORT:-5001}:5001"
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - cryptotrade-network
+    restart: unless-stopped
+    command: >
+      sh -c "
+        echo 'Waiting for database to be ready...' &&
+        sleep 5 &&
+        python seed_db.py &&
+        uvicorn main:app --host 0.0.0.0 --port 5001
+      "
+
+  # React Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: cryptotrade-frontend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    networks:
+      - cryptotrade-network
+    restart: unless-stopped
+
+volumes:
+  timescale_data:
+    driver: local
+
+networks:
+  cryptotrade-network:
+    driver: bridge
